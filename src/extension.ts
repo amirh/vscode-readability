@@ -3,13 +3,18 @@ import * as rs from 'text-readability';
 import { DetailsView, StatusItem } from './view';
 import { AnalysisResult, analyzeText } from './analyzer';
 
-export function activate(context: vscode.ExtensionContext) {
-	const detailsCommandId = 'readability.showDetails';
+const detailsCommandId = 'readability.showDetails';
 
-	let lastActiveEditor = vscode.window.activeTextEditor;
-	let detailsView = new DetailsView();
-	let statusItem = new StatusItem(context.subscriptions, detailsCommandId);
-	let analysisResult : AnalysisResult | undefined;
+export function activate(context: vscode.ExtensionContext) {
+	let controller = new ReadabilityController(context);
+}
+
+class ReadabilityController {
+	lastActiveEditor: vscode.TextEditor | undefined;
+	detailsView: DetailsView;
+	statusItem: StatusItem;
+	analysisResult: AnalysisResult | undefined;
+	timeout: NodeJS.Timer | undefined = undefined;
 
 	// True iff the desired state is to show the details for plaintext editors.
 	//
@@ -18,87 +23,103 @@ export function activate(context: vscode.ExtensionContext) {
 	//
 	// This value can be toggled by the user by clicking on the status bar item.
 	// When the user closes the details window this is set to false.
-	let showDetails = false;
+	showDetails = false;
+
+	constructor(context: vscode.ExtensionContext) {
+		this.lastActiveEditor = vscode.window.activeTextEditor;
+		this.detailsView = new DetailsView();
+		this.statusItem = new StatusItem(context.subscriptions, detailsCommandId);
+
+		context.subscriptions.push(vscode.commands.registerCommand(detailsCommandId, () => {
+			this.showDetails = !this.showDetails;
+			this.updateDetailsVisibility();
+		}));
+
+		this.wireVSCodeEvents(context);
+
+		this.evaluateReadability();
+		this.updateStatusItemVisibility();
+	}
+
+	wireVSCodeEvents(context: vscode.ExtensionContext) {
+		vscode.window.onDidChangeActiveTextEditor(editor => {
+			this.onDidChangeActiveTextEditorChanged(editor);
+		}, null, context.subscriptions);
+
+		vscode.workspace.onDidChangeTextDocument(event => {
+			this.onDidChangeTextDocument(event);
+		}, null, context.subscriptions);
+	}
+
+	onDidChangeActiveTextEditorChanged(editor: vscode.TextEditor | undefined) {
+			if (editor) {
+				this.lastActiveEditor = editor;
+				this.evaluateReadability();
+			}
+			this.updateStatusItemVisibility();
+			this.updateDetailsVisibility();
+	}
+
+	onDidChangeTextDocument(event: vscode.TextDocumentChangeEvent) {
+			if (this.lastActiveEditor && event.document === this.lastActiveEditor.document) {
+				this.triggerEvaluateReadability();
+			}
+	}
 
 	// Returns true if the desired state is to show the details panel.
-	function shouldShowDetails() {
-		if (lastActiveEditor === undefined) {
+	shouldShowDetails() {
+		if (this.lastActiveEditor === undefined) {
 			return false;
 		}
-		return showDetails && lastActiveEditor.document.languageId === 'plaintext';
+		return this.showDetails && this.lastActiveEditor.document.languageId === 'plaintext';
 	}
 
 	// Updates the view state by showing/hiding the details panel based to match
 	// the desired view state.
-	function updateDetailsVisibility() {
-		if (!detailsView.isVisible()  && shouldShowDetails()) {
-			detailsView.show(analysisResult, () => {
-					if (shouldShowDetails()) {
+	updateDetailsVisibility() {
+		if (!this.detailsView.isVisible()  && this.shouldShowDetails()) {
+			this.detailsView.show(this.analysisResult, () => {
+					if (this.shouldShowDetails()) {
 						// If we're disposed while the state says we should be showing it means
 						// the uses explicitly closed the details panel, so we update
 						// the wanted state to not show an editor.
-						showDetails = false;
+						this.showDetails = false;
 					}
 			});
-		} else if (detailsView.isVisible() && !shouldShowDetails()) {
-			detailsView.hide();
+		} else if (this.detailsView.isVisible() && !this.shouldShowDetails()) {
+			this.detailsView.hide();
 		}
 	}
 
-	function updateStatusItemVisibility() {
-			if (lastActiveEditor !== undefined && lastActiveEditor.document.languageId !== 'plaintext') {
-				statusItem.hide();
+	updateStatusItemVisibility() {
+			if (this.lastActiveEditor !== undefined && this.lastActiveEditor.document.languageId !== 'plaintext') {
+				this.statusItem.hide();
 			} else {
-				statusItem.show();
+				this.statusItem.show();
 			}
 	}
 
-	context.subscriptions.push(vscode.commands.registerCommand(detailsCommandId, () => {
-		showDetails = !showDetails;
-		updateDetailsVisibility();
-	}));
-
-
-	function evaluateReadability() {
-		if (!lastActiveEditor) {
+	evaluateReadability() {
+		if (!this.lastActiveEditor) {
 			return;
 		}
-		if (lastActiveEditor.document.languageId !== 'plaintext') {
+		if (this.lastActiveEditor.document.languageId !== 'plaintext') {
 			return;
 		}
 
-		analysisResult = analyzeText(lastActiveEditor.document.getText());
-		let standard = analysisResult.textStandard;
-		statusItem.setText(`Readability: ${standard}`);
-		detailsView.updateReport(analysisResult);
+		this.analysisResult = analyzeText(this.lastActiveEditor.document.getText());
+		let standard = this.analysisResult.textStandard;
+		this.statusItem.setText(`Readability: ${standard}`);
+		this.detailsView.updateReport(this.analysisResult);
 	}
 
-	vscode.window.onDidChangeActiveTextEditor(editor => {
-		if (editor) {
-			lastActiveEditor = editor;
-			evaluateReadability();
+	triggerEvaluateReadability() {
+		if (this.timeout) {
+			clearTimeout(this.timeout);
+			this.timeout = undefined;
 		}
-		updateStatusItemVisibility();
-		updateDetailsVisibility();
-	}, null, context.subscriptions);
-
-	let timeout: NodeJS.Timer | undefined = undefined;
-	function triggerEvaluateReadability() {
-		if (timeout) {
-			clearTimeout(timeout);
-			timeout = undefined;
-		}
-		timeout = setTimeout(evaluateReadability, 500);
-	}
-
-	vscode.workspace.onDidChangeTextDocument(event => {
-		if (lastActiveEditor && event.document === lastActiveEditor.document) {
-			triggerEvaluateReadability();
-		}
-	}, null, context.subscriptions);
-
-	if (lastActiveEditor) {
-		evaluateReadability();
-		updateStatusItemVisibility();
+		this.timeout = setTimeout(() => {
+			this.evaluateReadability();
+		}, 250);
 	}
 }
