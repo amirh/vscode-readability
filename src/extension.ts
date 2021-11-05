@@ -1,11 +1,15 @@
 import * as vscode from 'vscode';
 import * as rs from 'text-readability';
-import { generateDetailedReport, showDetailsView } from './view';
+import { DetailsView, StatusItem } from './view';
+import { AnalysisResult, analyzeText } from './analyzer';
 
 export function activate(context: vscode.ExtensionContext) {
+	const detailsCommandId = 'readability.showDetails';
+
 	let lastActiveEditor = vscode.window.activeTextEditor;
-	// The details panel if it's showing, undefined otherwise.
-	let detailsPanel: vscode.WebviewPanel | undefined;
+	let detailsView = new DetailsView();
+	let statusItem = new StatusItem(context.subscriptions, detailsCommandId);
+	let analysisResult : AnalysisResult | undefined;
 
 	// True iff the desired state is to show the details for plaintext editors.
 	//
@@ -15,9 +19,6 @@ export function activate(context: vscode.ExtensionContext) {
 	// This value can be toggled by the user by clicking on the status bar item.
 	// When the user closes the details window this is set to false.
 	let showDetails = false;
-
-	// The html for the detailed report.
-	let reportHtml: string;
 
 	// Returns true if the desired state is to show the details panel.
 	function shouldShowDetails() {
@@ -30,39 +31,33 @@ export function activate(context: vscode.ExtensionContext) {
 	// Updates the view state by showing/hiding the details panel based to match
 	// the desired view state.
 	function updateDetailsVisibility() {
-		if (detailsPanel === undefined  && shouldShowDetails()) {
-			detailsPanel = showDetailsView(reportHtml, () => {
+		if (!detailsView.isVisible()  && shouldShowDetails()) {
+			detailsView.show(analysisResult, () => {
 					if (shouldShowDetails()) {
 						// If we're disposed while the state says we should be showing it means
 						// the uses explicitly closed the details panel, so we update
 						// the wanted state to not show an editor.
 						showDetails = false;
 					}
-					detailsPanel = undefined;
 			});
-		} else if (detailsPanel !== undefined && !shouldShowDetails()) {
-			detailsPanel.dispose();
+		} else if (detailsView.isVisible() && !shouldShowDetails()) {
+			detailsView.hide();
 		}
 	}
 
 	function updateStatusItemVisibility() {
 			if (lastActiveEditor !== undefined && lastActiveEditor.document.languageId !== 'plaintext') {
-				readabilityStatusBarItem.hide();
+				statusItem.hide();
 			} else {
-				readabilityStatusBarItem.show();
+				statusItem.show();
 			}
 	}
 
-	const detailsCommandId = 'readability.showDetails';
 	context.subscriptions.push(vscode.commands.registerCommand(detailsCommandId, () => {
 		showDetails = !showDetails;
 		updateDetailsVisibility();
 	}));
 
-	let readabilityStatusBarItem: vscode.StatusBarItem;
-	readabilityStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-	readabilityStatusBarItem.command = detailsCommandId;
-	context.subscriptions.push(readabilityStatusBarItem);
 
 	function evaluateReadability() {
 		if (!lastActiveEditor) {
@@ -72,12 +67,10 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		let standard = rs.textStandard(lastActiveEditor.document.getText(), false);
-		readabilityStatusBarItem.text = `Readability: ${standard}`;
-		reportHtml = generateDetailedReport(lastActiveEditor.document.getText());
-		if (detailsPanel !== undefined) {
-			detailsPanel.webview.html = reportHtml;
-		}
+		analysisResult = analyzeText(lastActiveEditor.document.getText());
+		let standard = analysisResult.textStandard;
+		statusItem.setText(`Readability: ${standard}`);
+		detailsView.updateReport(analysisResult);
 	}
 
 	vscode.window.onDidChangeActiveTextEditor(editor => {
