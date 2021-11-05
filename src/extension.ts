@@ -1,26 +1,37 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
+import * as rs from 'text-readability';
 
-// this method is called when your extension is activated
-// your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-	
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "readability" is now active!');
+	let activeEditor = vscode.window.activeTextEditor;
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	let disposable = vscode.commands.registerCommand('readability.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from Readability!');
-	});
+	let readabilityStatusBarItem: vscode.StatusBarItem;
+	readabilityStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 
-	context.subscriptions.push(disposable);
+	context.subscriptions.push(readabilityStatusBarItem);
+
+	function evaluateReadability() {
+		if (activeEditor?.document.languageId !== 'plaintext') {
+			readabilityStatusBarItem.hide();
+			return;
+		}
+
+		readabilityStatusBarItem.text = `Readability: ${rs.textStandard(activeEditor.document.getText(), false)}`;
+		readabilityStatusBarItem.show();
+	}
+
+	evaluateReadability();
+
+	vscode.window.onDidChangeActiveTextEditor(editor => {
+		activeEditor = editor;
+		if (editor) {
+			evaluateReadability();
+		}
+	}, null, context.subscriptions);
+
+	vscode.workspace.onDidChangeTextDocument(event => {
+		if (activeEditor && event.document === activeEditor.document) {
+			evaluateReadability();
+		}
+	}, null, context.subscriptions);
+
 }
-
-// this method is called when your extension is deactivated
-export function deactivate() {}
