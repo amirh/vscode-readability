@@ -1,14 +1,25 @@
 import * as vscode from 'vscode';
 import * as rs from 'text-readability';
+import { generateDetailedReport, showDetailsView } from './view';
 
 export function activate(context: vscode.ExtensionContext) {
-	let activeEditor = vscode.window.activeTextEditor;
 	let lastActiveEditor = vscode.window.activeTextEditor;
+	// The details panel if it's showing, undefined otherwise.
+	let detailsPanel: vscode.WebviewPanel | undefined;
 
+	// True iff the desired state is to show the details for plaintext editors.
+	//
+	// The details panel is showing when this is true and the last active editor
+	// was of a plain text document.
+	//
+	// This value can be toggled by the user by clicking on the status bar item.
+	// When the user closes the details window this is set to false.
 	let showDetails = false;
-	let details: vscode.WebviewPanel | undefined;
+
+	// The html for the detailed report.
 	let reportHtml: string;
 
+	// Returns true if the desired state is to show the details panel.
 	function shouldShowDetails() {
 		if (lastActiveEditor === undefined) {
 			return false;
@@ -16,82 +27,30 @@ export function activate(context: vscode.ExtensionContext) {
 		return showDetails && lastActiveEditor.document.languageId === 'plaintext';
 	}
 
+	// Updates the view state by showing/hiding the details panel based to match
+	// the desired view state.
 	function updateDetailsVisibility() {
-		if (details === undefined  && shouldShowDetails()) {
-			details = vscode.window.createWebviewPanel(
-				'readabilityDetails', // Identifies the type of the webview. Used internally
-				'Readability', // Title of the panel displayed to the user
-				vscode.ViewColumn.Beside, // Editor column to show the new webview panel in.
-				{} // Webview options. More on these later.
-			);
-			if (reportHtml !== undefined) {
-				details.webview.html = reportHtml;
-			}
-			details.onDidDispose(
-				() => {
+		if (detailsPanel === undefined  && shouldShowDetails()) {
+			detailsPanel = showDetailsView(reportHtml, () => {
 					if (shouldShowDetails()) {
 						// If we're disposed while the state says we should be showing it means
-						// the uses explicitly closed the details window, so we update
+						// the uses explicitly closed the details panel, so we update
 						// the wanted state to not show an editor.
 						showDetails = false;
 					}
-					details = undefined;
-				}
-			);
-		} else if (details !== undefined && !shouldShowDetails()) {
-			details.dispose();
+					detailsPanel = undefined;
+			});
+		} else if (detailsPanel !== undefined && !shouldShowDetails()) {
+			detailsPanel.dispose();
 		}
 	}
 
-	function generateDetailedReport(text: string) {
-		return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Readability</title>
-</head>
-<body>
-  <table>
-  <tr>
-    <td>Readability Consensus</td>
-    <td>${rs.textStandard(text, false)}</td>
-  </tr>
-  <tr>
-    <td>Flesch Reading Ease</td>
-    <td>${rs.fleschReadingEase(text)}</td>
-  </tr>
-  <tr>
-    <td>Flesch-Kincaid Grade</td>
-    <td>${rs.fleschKincaidGrade(text)}</td>
-  </tr>
-  <tr>
-    <td>Fog Scale</td>
-    <td>${rs.gunningFog(text)}</td>
-  </tr>
-  <tr>
-    <td>SMOG Index</td>
-    <td>${rs.smogIndex(text)}</td>
-  </tr>
-  <tr>
-    <td>Automated Readability</td>
-    <td>${rs.automatedReadabilityIndex(text)}</td>
-  </tr>
-  <tr>
-    <td>The Coleman-Liau</td>
-    <td>${rs.colemanLiauIndex(text)}</td>
-  </tr>
-  <tr>
-    <td>Linsear Write</td>
-    <td>${rs.linsearWriteFormula(text)}</td>
-  </tr>
-  <tr>
-    <td>Dale-Chall Readability</td>
-    <td>${rs.daleChallReadabilityScore(text)}</td>
-  </tr>
-  </table>
-</body>
-</html>`;
+	function updateStatusItemVisibility() {
+			if (lastActiveEditor !== undefined && lastActiveEditor.document.languageId !== 'plaintext') {
+				readabilityStatusBarItem.hide();
+			} else {
+				readabilityStatusBarItem.show();
+			}
 	}
 
 	const detailsCommandId = 'readability.showDetails';
@@ -106,34 +65,47 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(readabilityStatusBarItem);
 
 	function evaluateReadability() {
-		if (activeEditor?.document.languageId !== 'plaintext') {
-			readabilityStatusBarItem.hide();
+		if (!lastActiveEditor) {
+			return;
+		}
+		if (lastActiveEditor.document.languageId !== 'plaintext') {
 			return;
 		}
 
-		let standard = rs.textStandard(activeEditor.document.getText(), false);
+		let standard = rs.textStandard(lastActiveEditor.document.getText(), false);
 		readabilityStatusBarItem.text = `Readability: ${standard}`;
-		readabilityStatusBarItem.show();
-		reportHtml = generateDetailedReport(activeEditor.document.getText());
-		if (details !== undefined) {
-			details.webview.html = reportHtml;
+		reportHtml = generateDetailedReport(lastActiveEditor.document.getText());
+		if (detailsPanel !== undefined) {
+			detailsPanel.webview.html = reportHtml;
 		}
 	}
 
-	evaluateReadability();
-
 	vscode.window.onDidChangeActiveTextEditor(editor => {
-		activeEditor = editor;
 		if (editor) {
 			lastActiveEditor = editor;
 			evaluateReadability();
 		}
+		updateStatusItemVisibility();
 		updateDetailsVisibility();
 	}, null, context.subscriptions);
 
+	let timeout: NodeJS.Timer | undefined = undefined;
+	function triggerEvaluateReadability() {
+		if (timeout) {
+			clearTimeout(timeout);
+			timeout = undefined;
+		}
+		timeout = setTimeout(evaluateReadability, 500);
+	}
+
 	vscode.workspace.onDidChangeTextDocument(event => {
-		if (activeEditor && event.document === activeEditor.document) {
-			evaluateReadability();
+		if (lastActiveEditor && event.document === lastActiveEditor.document) {
+			triggerEvaluateReadability();
 		}
 	}, null, context.subscriptions);
+
+	if (lastActiveEditor) {
+		evaluateReadability();
+		updateStatusItemVisibility();
+	}
 }
